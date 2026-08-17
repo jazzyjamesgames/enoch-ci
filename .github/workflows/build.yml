@@ -98,7 +98,7 @@ jobs:
         run: |
           cd enoch/i386/boot2
           perl -pi -e 's/^\t\@\$\(LD\) -arch i386/\t-\@\$(LD) -arch i386/' Makefile
-          sed -n '134p' Makefile | cat -A
+          sed -n '134p' Makefile | cat -et   # -A is GNU-only; BSD cat uses -e -t
           grep -q -- '-@$(LD) -arch i386' Makefile || { echo "PATCH DID NOT APPLY"; exit 1; }
 
       # NASM >= ~2.15 rejects movzx with an unsized memory operand; the
