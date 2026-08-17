@@ -72,6 +72,35 @@ jobs:
           cat version 2>/dev/null || true
           cat revision 2>/dev/null || true
 
+      # CRITICAL: upstream commits ~695 prebuilt binaries under sym/, including
+      # boot, boot0, boot1h and boot.sys. If left in place they survive a failed
+      # build and are indistinguishable from freshly compiled output - the first
+      # run produced artifacts byte-identical to these committed files. Removing
+      # them means anything present in sym/ afterwards was genuinely built here.
+      - name: Remove upstream prebuilt binaries
+        run: |
+          cd enoch
+          echo "=== committed binaries being removed ==="
+          git ls-files sym/ | wc -l
+          for f in sym/i386/boot0 sym/i386/boot1h sym/i386/boot; do
+            [ -f "$f" ] && printf "%-20s %s\n" "$(basename $f)" "$(shasum -a 256 "$f" | cut -d' ' -f1)"
+          done
+          rm -rf sym obj
+          test ! -e sym/i386/boot || { echo "sym/ not cleared"; exit 1; }
+          echo "sym/ and obj/ cleared"
+
+      # Symbols_LINKER_ONLY.dylib is dead output: written at boot2/Makefile:142
+      # and referenced nowhere but clean-local (line 206). Modern ld64 refuses it
+      # ("dylibs must link with libSystem.dylib for architecture i386"), which
+      # aborts the boot target before machOconv runs. Prefix the recipe line with
+      # '-' so make tolerates the failure of an artifact it discards.
+      - name: Make dead Symbols_LINKER_ONLY link non-fatal
+        run: |
+          cd enoch/i386/boot2
+          perl -pi -e 's/^\t\@\$\(LD\) -arch i386/\t-\@\$(LD) -arch i386/' Makefile
+          sed -n '134p' Makefile | cat -A
+          grep -q -- '-@$(LD) -arch i386' Makefile || { echo "PATCH DID NOT APPLY"; exit 1; }
+
       # NASM >= ~2.15 rejects movzx with an unsized memory operand; the
       # 2010-era assembler Chameleon targeted inferred it. Line 358 compares
       # the same field via `cmp al`, so it is a byte.
@@ -112,12 +141,23 @@ jobs:
           echo "=== outcome: ${{ steps.build.outcome }} ==="
           echo "=== produced binaries (sym/) ==="
           find sym -type f 2>/dev/null | head -50 || echo "(no sym/ output)"
-          echo "=== boot stages ==="
+          echo "=== boot stages (provenance-checked) ==="
+          # sym/ was wiped before the build, so anything here was built now.
+          # Compare against the upstream committed blob as a second check:
+          # BUILT means our output differs from what upstream shipped.
           for f in sym/i386/boot0 sym/i386/boot1h sym/i386/boot; do
             if [ -f "$f" ]; then
               echo "--- $f ---"
               file "$f"
-              shasum -a 256 "$f"
+              ours=$(shasum -a 256 "$f" | cut -d' ' -f1)
+              theirs=$(git show "HEAD:$f" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+              echo "  ours:     $ours"
+              echo "  upstream: $theirs"
+              if [ "$ours" = "$theirs" ]; then
+                echo "  VERDICT: IDENTICAL TO UPSTREAM PREBUILT - treat as unverified"
+              else
+                echo "  VERDICT: BUILT FROM SOURCE"
+              fi
             else
               echo "MISSING: $f"
             fi
