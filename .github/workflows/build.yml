@@ -1,0 +1,121 @@
+name: Build Enoch (Chameleon)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }}
+
+    steps:
+      - name: Runner environment
+        run: |
+          sw_vers
+          echo "arch: $(uname -m)"
+          echo "--- Xcode versions present ---"
+          ls /Applications | grep -i -E '^xcode' || echo "(none listed)"
+          echo "--- active toolchain ---"
+          xcodebuild -version || true
+          clang --version
+
+      # Chameleon is 32-bit Mach-O. Modern Xcode dropped i386 support, so
+      # establish up front whether this runner can emit i386 at all.
+      - name: Probe i386 support
+        run: |
+          echo 'int main(void){return 0;}' > /tmp/probe.c
+
+          echo "=== compile-only (-arch i386 -c) ==="
+          if clang -arch i386 -c /tmp/probe.c -o /tmp/probe.o 2>/tmp/cc.err; then
+            echo "COMPILE_I386: OK"
+            file /tmp/probe.o
+          else
+            echo "COMPILE_I386: FAIL"
+            cat /tmp/cc.err
+          fi
+
+          echo "=== link (-arch i386) ==="
+          if clang -arch i386 /tmp/probe.c -o /tmp/probe.bin 2>/tmp/ld.err; then
+            echo "LINK_I386: OK"
+            file /tmp/probe.bin
+          else
+            echo "LINK_I386: FAIL"
+            cat /tmp/ld.err
+          fi
+
+          echo "=== freestanding link (closer to how a bootloader links) ==="
+          if clang -arch i386 -nostdlib -Wl,-e,_main /tmp/probe.c -o /tmp/probe.free 2>/tmp/free.err; then
+            echo "FREESTANDING_I386: OK"
+            file /tmp/probe.free
+          else
+            echo "FREESTANDING_I386: FAIL"
+            cat /tmp/free.err
+          fi
+
+      - name: Install nasm
+        run: |
+          brew install nasm || true
+          which nasm && nasm -v
+
+      - name: Clone Enoch source
+        run: |
+          git clone --depth 1 https://github.com/andyvand/Enoch.git enoch
+          cd enoch
+          echo "HEAD: $(git rev-parse HEAD)"
+          cat version 2>/dev/null || true
+          cat revision 2>/dev/null || true
+
+      - name: Attempt build
+        id: build
+        continue-on-error: true
+        run: |
+          cd enoch
+          # revision rule shells out to svnversion, which is absent here
+          [ -s revision ] || echo "0" > revision
+          set -o pipefail
+          make 2>&1 | tee /tmp/build.log
+        shell: bash
+
+      - name: Build result summary
+        if: always()
+        run: |
+          cd enoch || exit 0
+          echo "=== outcome: ${{ steps.build.outcome }} ==="
+          echo "=== produced binaries (sym/) ==="
+          find sym -type f 2>/dev/null | head -50 || echo "(no sym/ output)"
+          echo "=== boot stages ==="
+          for f in sym/i386/boot0 sym/i386/boot1h sym/i386/boot; do
+            if [ -f "$f" ]; then
+              echo "--- $f ---"
+              file "$f"
+              shasum -a 256 "$f"
+            else
+              echo "MISSING: $f"
+            fi
+          done
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.os }}
+          path: /tmp/build.log
+          if-no-files-found: warn
+
+      - name: Upload boot binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enoch-${{ matrix.os }}
+          path: |
+            enoch/sym/i386/boot0
+            enoch/sym/i386/boot0md
+            enoch/sym/i386/boot1h
+            enoch/sym/i386/boot1f32
+            enoch/sym/i386/boot
+          if-no-files-found: warn
