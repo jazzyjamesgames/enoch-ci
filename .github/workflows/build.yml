@@ -115,6 +115,23 @@ jobs:
           sed -n '357p' "$f"
           grep -q 'movzx ax, byte \[BPR gsIterator' "$f" || { echo "PATCH DID NOT APPLY"; exit 1; }
 
+      # A 2010 codebase under clang 17 trips warnings that did not exist then
+      # (e.g. K&R definitions: "a function definition without a prototype is
+      # deprecated ... not supported in C2x"). With -Werror those abort the
+      # build. Genuine errors still fail; only warnings stop being fatal.
+      # This surfaced only after removing the prebuilt sym/i386/cconfig.
+      - name: Strip -Werror from build files
+        run: |
+          cd enoch
+          echo "=== before ==="
+          grep -rn -- "-Werror" Make.rules i386/boot2/Makefile i386/modules/MakeInc.dir | wc -l
+          find . \( -name Makefile -o -name Make.rules -o -name MakeInc.dir -o -name '*.mk' \) \
+            -print0 | xargs -0 perl -pi -e 's/\s-Werror\b//g'
+          echo "=== after (build files only) ==="
+          remaining=$(grep -rn -- "-Werror" Make.rules i386/boot2/Makefile i386/modules/MakeInc.dir | wc -l)
+          echo "$remaining"
+          [ "$remaining" -eq 0 ] || { echo "-Werror still present"; exit 1; }
+
       - name: Attempt build
         id: build
         continue-on-error: true
