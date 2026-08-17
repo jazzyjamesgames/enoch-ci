@@ -132,6 +132,23 @@ jobs:
           echo "$remaining"
           [ "$remaining" -eq 0 ] || { echo "-Werror still present"; exit 1; }
 
+      # cconfig is the interactive menuconfig-style HOST tool. It is built for
+      # i386 too, and the modern SDK ships no i386 ncurses slice, so linking
+      # cconfig_32 fails on _COLS et al. Nothing about the boot loader needs it:
+      # auto.conf / autoconf.h / autoconf.inc are committed and are what the
+      # build actually reads. Only .config (the tool's own state file) is
+      # missing. Create it, then make the derived files newer so Make.rules:103
+      # considers them up to date and never invokes the config subsystem.
+      - name: Bypass cconfig (host tool, not needed for boot loader)
+        run: |
+          cd enoch
+          cp auto.conf .config
+          touch .config
+          sleep 1
+          touch auto.conf autoconf.h autoconf.inc
+          ls -la --time-style=full-iso .config auto.conf autoconf.h autoconf.inc 2>/dev/null \
+            || ls -lT .config auto.conf autoconf.h autoconf.inc
+
       - name: Attempt build
         id: build
         continue-on-error: true
