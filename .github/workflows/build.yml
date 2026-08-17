@@ -9,7 +9,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-13, macos-14, macos-15]
+        # macos-13 (last Intel runner) is retired - the job sat queued
+        # indefinitely and was never assigned a runner.
+        os: [macos-14, macos-15]
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }}
 
@@ -70,6 +72,20 @@ jobs:
           cat version 2>/dev/null || true
           cat revision 2>/dev/null || true
 
+      # NASM >= ~2.15 rejects movzx with an unsized memory operand; the
+      # 2010-era assembler Chameleon targeted inferred it. Line 358 compares
+      # the same field via `cmp al`, so it is a byte.
+      - name: Patch boot1x.s for modern NASM
+        run: |
+          cd enoch
+          f=i386/boot1/boot1x.s
+          echo "--- before ---"
+          sed -n '357p' "$f"
+          sed -i '' 's/movzx ax, \[BPR gsIterator + DirIterator\.entry\]/movzx ax, byte [BPR gsIterator + DirIterator.entry]/' "$f"
+          echo "--- after ---"
+          sed -n '357p' "$f"
+          grep -q 'movzx ax, byte \[BPR gsIterator' "$f" || { echo "PATCH DID NOT APPLY"; exit 1; }
+
       - name: Attempt build
         id: build
         continue-on-error: true
@@ -78,8 +94,16 @@ jobs:
           # revision rule shells out to svnversion, which is absent here
           [ -s revision ] || echo "0" > revision
           set -o pipefail
-          make 2>&1 | tee /tmp/build.log
+          # -k: keep going after errors so one run surfaces every remaining
+          # source-compat break rather than just the first.
+          make -k 2>&1 | tee /tmp/build.log
         shell: bash
+
+      - name: Distinct errors
+        if: always()
+        run: |
+          echo "=== all error lines ==="
+          grep -nE "error:|Error [0-9]" /tmp/build.log | head -60 || echo "(none)"
 
       - name: Build result summary
         if: always()
